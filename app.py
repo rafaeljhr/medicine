@@ -457,8 +457,8 @@ PAGE = r"""<!doctype html>
   <div class="tabs">
     <div class="tab on" data-tab="sintomas">🤒 Sintomas</div>
     <div class="tab" data-tab="medicamentos">💊 Medicamentos</div>
-    <div class="tab" data-tab="pediatrico">🧒 Pediátrico</div>
     <div class="tab" data-tab="socorros">🚑 1ºs Socorros</div>
+    <div class="tab" data-tab="pediatrico">🧒 Pediátrico</div>
     <div class="tab" data-tab="inventario">🧰 Inventário</div>
   </div>
 
@@ -551,7 +551,7 @@ PAGE = r"""<!doctype html>
         <div class="field" style="flex:2 1 200px"><label>Medicamento</label>
           <input id="inv-nome" list="medlist" placeholder="ex.: Ben-u-ron 1000 mg"></div>
         <div class="field"><label>Validade</label>
-          <input id="inv-val" type="month"></div>
+          <input id="inv-val" type="date"></div>
         <div class="field" style="max-width:90px"><label>Qtd.</label>
           <input id="inv-qty" type="number" min="1" value="1"></div>
         <button class="btn" id="inv-add">＋ Adicionar</button>
@@ -612,19 +612,24 @@ PAGE = r"""<!doctype html>
   ['peso','cpar','cibu'].forEach(id => $(id).addEventListener('input', calc));
 
   // --- Inventário ---
+  function expEnd(v) {           // aceita AAAA-MM-DD (data) ou AAAA-MM (legado)
+    const p = (v || '').split('-').map(Number);
+    if (p.length >= 3 && p[0]) return new Date(p[0], p[1] - 1, p[2]);
+    if (p.length === 2 && p[0]) return new Date(p[0], p[1], 0);  // fim do mês
+    return null;
+  }
   function expClass(v) {
-    if (!v) return 'none';
-    const [y, m] = v.split('-').map(Number);
-    if (!y || !m) return 'none';
-    const end = new Date(y, m, 0), now = new Date();
-    const days = (end - now) / 86400000;
+    const end = expEnd(v);
+    if (!end) return 'none';
+    const days = (end - new Date()) / 86400000;
     if (days < 0) return 'exp';
     if (days < 60) return 'soon';
     return 'ok';
   }
   function expLabel(v, cls) {
     if (!v) return 'sem validade';
-    const txt = v.split('-').reverse().join('/');  // YYYY-MM -> MM/YYYY
+    const p = v.split('-');
+    const txt = p.length >= 3 ? `${p[2]}/${p[1]}/${p[0]}` : `${p[1]}/${p[0]}`;
     return (cls === 'exp' ? '⚠ expirado ' : (cls === 'soon' ? 'expira ' : 'val. ')) + txt;
   }
   async function loadInv() {
