@@ -28,9 +28,9 @@ INV_FILE = DATA_DIR / "inventory.json"
 
 # Categorias do inventário (separadores). "geral" é a genérica por omissão.
 INV_CATS = [
-    {"key": "medicamentos", "label": "Medicamentos", "icone": "💊"},
-    {"key": "pensos", "label": "Pensos & Material", "icone": "🩹"},
-    {"key": "geral", "label": "Geral", "icone": "🧰"},
+    {"key": "medicamentos", "label": "Medicamentos", "icone": "💊", "validade": True},
+    {"key": "pensos", "label": "Pensos & Material", "icone": "🩹", "validade": False},
+    {"key": "geral", "label": "Geral", "icone": "🧰", "validade": True},
 ]
 INV_CAT_KEYS = {c["key"] for c in INV_CATS}
 
@@ -314,9 +314,14 @@ def read_inv():
         return []
     if not isinstance(data, list):
         return []
-    for it in data:  # itens antigos não tinham categoria -> eram medicamentos
-        if "cat" not in it:
+    for it in data:
+        if "cat" not in it:          # itens antigos eram medicamentos
             it["cat"] = "medicamentos"
+        if "stock" not in it:        # qty antigo -> stock; novo campo "uso"
+            it["stock"] = it.get("qty", 1)
+        if "uso" not in it:
+            it["uso"] = 0
+        it.pop("qty", None)
     return data
 
 
@@ -342,13 +347,29 @@ def api_inventory_add():
     cat = (d.get("cat") or "geral").strip()
     if cat not in INV_CAT_KEYS:
         cat = "geral"
-    try:
-        qty = max(1, int(d.get("qty") or 1))
-    except (TypeError, ValueError):
-        qty = 1
     items = read_inv()
     items.append({"id": uuid.uuid4().hex[:10], "nome": nome, "cat": cat,
-                  "validade": validade, "qty": qty})
+                  "validade": validade, "stock": 1, "uso": 0})
+    write_inv(items)
+    return jsonify(items)
+
+
+@app.route("/api/inventory/qty", methods=["POST"])
+def api_inventory_qty():
+    d = request.get_json(silent=True) or request.form
+    item_id = (d.get("id") or "").strip()
+    campo = d.get("campo")
+    if campo not in ("stock", "uso"):
+        return jsonify({"ok": False}), 400
+    try:
+        delta = int(d.get("delta", 0))
+    except (TypeError, ValueError):
+        delta = 0
+    items = read_inv()
+    for it in items:
+        if it.get("id") == item_id:
+            it[campo] = max(0, int(it.get(campo, 0)) + delta)
+            break
     write_inv(items)
     return jsonify(items)
 
@@ -414,8 +435,30 @@ PAGE = r"""<!doctype html>
     .tab.on .grip { opacity:.75; }
     .itabs { display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:.6rem; }
     .itab { font-size:.85rem; font-weight:700; padding:.4rem .7rem; border-radius:999px; cursor:pointer;
-      border:1px solid var(--border); background:var(--card); color:var(--muted); }
+      border:1px solid var(--border); background:var(--card); color:var(--muted); display:inline-flex;
+      align-items:center; gap:.3rem; }
     .itab.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .invhead { display:flex; justify-content:space-between; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:.4rem; }
+    .level-title { font-size:.74rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; font-weight:800; }
+    .cart { display:flex; align-items:center; gap:.4rem; padding:.45rem .8rem; border-radius:999px;
+      border:1px solid var(--accent); background:var(--accent); color:#fff; font-weight:800; cursor:pointer; font-size:.88rem; }
+    .cart .badge { background:#fff; color:var(--accent); font-size:.72rem; font-weight:800; min-width:17px;
+      text-align:center; padding:0 .28rem; border-radius:999px; }
+    .ibadge { font-size:.7rem; font-weight:800; min-width:16px; text-align:center; padding:0 .26rem;
+      border-radius:999px; background:var(--red); color:#fff; }
+    .itab.on .ibadge { background:#fff; color:var(--red); }
+    .inv-item.falta { border-color:var(--red); background:var(--red-bg); }
+    .inv-item .info { flex:1; min-width:130px; font-weight:700; display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; }
+    .steppers { display:flex; gap:.6rem; flex-wrap:wrap; }
+    .stp { display:flex; align-items:center; gap:.2rem; }
+    .stp .lbl { font-size:.68rem; color:var(--muted); font-weight:700; }
+    .sb { width:28px; height:28px; border-radius:8px; border:1px solid var(--border); background:var(--card);
+      color:var(--text); font-size:1.1rem; line-height:1; cursor:pointer; font-weight:700; }
+    .sb:hover { border-color:var(--accent); color:var(--accent); }
+    .num { min-width:20px; text-align:center; font-weight:800; }
+    .num.zero { color:var(--red); }
+    .act.repor { border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:9px;
+      padding:.4rem .6rem; cursor:pointer; font-weight:700; font-size:.82rem; }
     .search { width:100%; padding:.7rem .9rem; font-size:1rem; border-radius:12px;
       border:1px solid var(--border); background:var(--card); color:var(--text);
       box-shadow:var(--shadow); margin:0 0 1rem; }
@@ -585,24 +628,26 @@ PAGE = r"""<!doctype html>
 
   <!-- INVENTARIO -->
   <section id="sec-inventario" class="hide">
+    <div class="invhead">
+      <div class="level-title">📂 Categorias do inventário</div>
+      <button id="inv-cartbtn" class="cart">🛒 A comprar <span class="badge" id="inv-cartn">0</span></button>
+    </div>
     <div class="itabs" id="invtabs">
       {% for c in inv_cats %}
-      <div class="itab{% if loop.first %} on{% endif %}" data-inv="{{ c.key }}">{{ c.icone }} {{ c.label }}</div>
+      <div class="itab{% if loop.first %} on{% endif %}" data-inv="{{ c.key }}" data-val="{{ 1 if c.validade else 0 }}">{{ c.icone }} {{ c.label }} <span class="ibadge hide" id="ib-{{ c.key }}"></span></div>
       {% endfor %}
     </div>
-    <div class="card" style="margin-bottom:1rem">
+    <div class="card" id="inv-addcard" style="margin:.7rem 0 1rem">
       <div class="row">
         <div class="field" style="flex:2 1 200px"><label>Item (em <b id="inv-catlabel">Medicamentos</b>)</label>
           <input id="inv-nome" list="medlist" placeholder="ex.: Ben-u-ron 1000 mg, Pensos rápidos…"></div>
-        <div class="field"><label>Validade (opcional)</label>
+        <div class="field" id="inv-valwrap"><label>Validade (opcional)</label>
           <input id="inv-val" type="date"></div>
-        <div class="field" style="max-width:90px"><label>Qtd.</label>
-          <input id="inv-qty" type="number" min="1" value="1"></div>
         <button class="btn" id="inv-add">＋ Adicionar</button>
       </div>
       <datalist id="medlist">{% for m in meds %}<option value="{{ m.nome }}">{% endfor %}</datalist>
-      <div class="sub" style="margin-top:.5rem">Adiciona ao separador selecionado. A <b>validade é opcional</b>
-        (ex.: pensos não têm). Vários do mesmo com validades diferentes = várias linhas. Guardado no Pi.</div>
+      <div class="sub" style="margin-top:.5rem">Cada item tem <b>stock</b> (reserva) e <b>em uso</b>; quando o
+        stock chega a 0 vai para <b>A comprar</b>. A validade é opcional (pensos não têm).</div>
     </div>
     <div id="inv-list"></div>
   </section>
@@ -676,55 +721,93 @@ PAGE = r"""<!doctype html>
     const txt = p.length >= 3 ? `${p[2]}/${p[1]}/${p[0]}` : `${p[1]}/${p[0]}`;
     return (cls === 'exp' ? '⚠ expirado ' : (cls === 'soon' ? 'expira ' : 'val. ')) + txt;
   }
-  let invCat = 'medicamentos', invItems = [];
-  const INV_LABELS = {};
-  document.querySelectorAll('#invtabs .itab').forEach(t => INV_LABELS[t.dataset.inv] = t.textContent.trim());
+  let invCat = 'medicamentos', invItems = [], invMode = 'cat', invPaused = false;
+  const INV_LABELS = {}, INV_HASVAL = {}, CATKEYS = [];
+  document.querySelectorAll('#invtabs .itab').forEach(t => {
+    CATKEYS.push(t.dataset.inv);
+    INV_LABELS[t.dataset.inv] = t.textContent.trim();
+    INV_HASVAL[t.dataset.inv] = t.dataset.val === '1';
+  });
+  const invFalta = it => (it.stock || 0) === 0;
   function setInvCat(key) {
-    invCat = key;
+    invCat = key; invMode = 'cat';
     document.querySelectorAll('#invtabs .itab').forEach(t => t.classList.toggle('on', t.dataset.inv === key));
     $('inv-catlabel').textContent = (INV_LABELS[key] || '').replace(/^\S+\s/, '');
+    $('inv-valwrap').classList.toggle('hide', !INV_HASVAL[key]);
     renderInv();
   }
   document.querySelectorAll('#invtabs .itab').forEach(t => t.addEventListener('click', () => setInvCat(t.dataset.inv)));
+  $('inv-cartbtn').onclick = () => { invMode = invMode === 'lista' ? 'cat' : 'lista'; renderInv(); };
 
+  function invStepper(id, campo, label, val) {
+    return `<div class="stp"><span class="lbl">${label}</span>
+      <button class="sb" data-iq="${id}|${campo}|-1">−</button>
+      <span class="num ${campo === 'stock' && val === 0 ? 'zero' : ''}">${val}</span>
+      <button class="sb" data-iq="${id}|${campo}|1">+</button></div>`;
+  }
+  function invRow(it) {
+    const falta = invFalta(it);
+    let chip = '';
+    if (INV_HASVAL[it.cat]) { const cls = expClass(it.validade); chip = `<span class="v ${cls}">${expLabel(it.validade, cls)}</span>`; }
+    return `<div class="inv-item ${falta ? 'falta' : ''}">
+      <div class="info">${it.nome} ${falta ? '<span class="v exp">EM FALTA</span>' : chip}</div>
+      <div class="steppers">${invStepper(it.id, 'stock', 'Stock', it.stock || 0)}${invStepper(it.id, 'uso', 'Em uso', it.uso || 0)}</div>
+      <button class="x" data-del="${it.id}" title="remover">✕</button></div>`;
+  }
+  function invRowFalta(it) {
+    return `<div class="inv-item falta"><div class="info">${it.nome}</div>
+      <button class="act repor" data-ibuy="${it.id}">✓ Comprei (+1)</button>
+      <button class="x" data-del="${it.id}" title="remover">✕</button></div>`;
+  }
   async function loadInv() {
+    if (invPaused) return;
     try { invItems = await (await fetch('/api/inventory')).json(); } catch (e) {}
     renderInv();
   }
   function renderInv() {
+    let total = 0;
+    CATKEYS.forEach(k => {
+      const n = invItems.filter(i => (i.cat || 'geral') === k && invFalta(i)).length;
+      const b = $('ib-' + k); if (b) { b.textContent = n; b.classList.toggle('hide', n === 0); } total += n;
+    });
+    $('inv-cartn').textContent = total;
+    $('inv-addcard').classList.toggle('hide', invMode === 'lista');
+    $('invtabs').classList.toggle('hide', invMode === 'lista');
     const box = $('inv-list');
-    const items = invItems.filter(it => (it.cat || 'geral') === invCat);
-    if (!items.length) { box.innerHTML = `<div class="empty">Nada em "${INV_LABELS[invCat] || invCat}". Adiciona acima. 👆</div>`; return; }
-    const groups = {};
-    items.forEach(it => (groups[it.nome] = groups[it.nome] || []).push(it));
-    box.innerHTML = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'pt')).map(nome => {
-      const rows = groups[nome].sort((a, b) => (a.validade || '').localeCompare(b.validade || '')).map(it => {
-        const cls = expClass(it.validade);
-        return `<div class="inv-item"><span class="v ${cls}">${expLabel(it.validade, cls)}</span>
-          <span class="sub">${it.qty > 1 ? '×' + it.qty : ''}</span>
-          <button class="x" data-del="${it.id}" title="remover">✕</button></div>`;
+    if (invMode === 'lista') {
+      const falta = invItems.filter(invFalta);
+      if (!falta.length) box.innerHTML = '<div class="empty">🎉 Nada em falta. Tudo com stock!</div>';
+      else box.innerHTML = CATKEYS.map(k => {
+        const sub = falta.filter(i => (i.cat || 'geral') === k);
+        return sub.length ? `<div class="inv-group"><h4>${INV_LABELS[k]}</h4>${sub.map(invRowFalta).join('')}</div>` : '';
       }).join('');
-      return `<div class="inv-group"><h4>${nome}</h4>${rows}</div>`;
-    }).join('');
-    box.querySelectorAll('.x').forEach(b => b.addEventListener('click', () => delItem(b.dataset.del)));
+    } else {
+      let list = invItems.filter(i => (i.cat || 'geral') === invCat);
+      list.sort((a, b) => (invFalta(b) - invFalta(a)) || a.nome.localeCompare(b.nome, 'pt'));
+      box.innerHTML = list.length ? list.map(invRow).join('')
+        : `<div class="empty">Nada em "${(INV_LABELS[invCat] || '').replace(/^\S+\s/, '')}". Adiciona acima. 👆</div>`;
+    }
+    box.querySelectorAll('[data-iq]').forEach(b => b.onclick = () => { const [id, c, d] = b.dataset.iq.split('|'); invApi('/api/inventory/qty', { id, campo: c, delta: Number(d) }); });
+    box.querySelectorAll('[data-ibuy]').forEach(b => b.onclick = () => invApi('/api/inventory/qty', { id: b.dataset.ibuy, campo: 'stock', delta: 1 }));
+    box.querySelectorAll('[data-del]').forEach(b => b.onclick = () => invApi('/api/inventory/delete', { id: b.dataset.del }));
+  }
+  async function invApi(path, body) {
+    invPaused = true;
+    try { const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      invItems = await r.json(); } finally { invPaused = false; }
+    renderInv();
   }
   async function addItem() {
     const nome = $('inv-nome').value.trim();
     if (!nome) { $('inv-nome').focus(); return; }
-    const body = { nome, cat: invCat, validade: $('inv-val').value, qty: $('inv-qty').value };
-    const r = await fetch('/api/inventory/add', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (r.ok) { $('inv-nome').value = ''; $('inv-val').value = ''; $('inv-qty').value = '1';
-      invItems = await r.json(); renderInv(); $('inv-nome').focus(); }
-  }
-  async function delItem(id) {
-    const r = await fetch('/api/inventory/delete', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
-    if (r.ok) { invItems = await r.json(); renderInv(); }
+    const body = { nome, cat: invCat, validade: INV_HASVAL[invCat] ? $('inv-val').value : '' };
+    invPaused = true;
+    try { const r = await fetch('/api/inventory/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (r.ok) invItems = await r.json(); } finally { invPaused = false; }
+    $('inv-nome').value = ''; $('inv-val').value = ''; renderInv(); $('inv-nome').focus();
   }
   $('inv-add').addEventListener('click', addItem);
   $('inv-nome').addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
-  // auto-refresh do inventário enquanto o separador estiver aberto
   setInterval(() => { if (!$('sec-inventario').classList.contains('hide')) loadInv(); }, 5000);
 
   // Quick-add a partir da ficha do medicamento (vai para Medicamentos)
