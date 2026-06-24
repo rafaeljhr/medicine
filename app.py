@@ -374,9 +374,11 @@ PAGE = r"""<!doctype html>
     .disclaimer b { color:var(--red); }
     .tabs { display:flex; gap:.4rem; flex-wrap:wrap; margin:.6rem 0 1rem; position:sticky; top:0;
       background:var(--bg); padding:.5rem 0; z-index:5; }
-    .tab { font-size:.9rem; font-weight:700; padding:.5rem .85rem; border-radius:999px; cursor:pointer;
-      border:1px solid var(--border); background:var(--card); color:var(--muted); }
+    .tab { font-size:.9rem; font-weight:700; padding:.5rem .85rem; border-radius:999px; cursor:grab;
+      border:1px solid var(--border); background:var(--card); color:var(--muted);
+      touch-action:none; user-select:none; -webkit-user-select:none; }
     .tab.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .tab.dragging { opacity:.55; cursor:grabbing; }
     .search { width:100%; padding:.7rem .9rem; font-size:1rem; border-radius:12px;
       border:1px solid var(--border); background:var(--card); color:var(--text);
       box-shadow:var(--shadow); margin:0 0 1rem; }
@@ -454,7 +456,7 @@ PAGE = r"""<!doctype html>
     SNS 24: <b>808 24 24 24</b> · Antivenenos (CIAV): <b>800 250 250</b>.
   </div>
 
-  <div class="tabs">
+  <div class="tabs" id="tabs">
     <div class="tab on" data-tab="sintomas">🤒 Sintomas</div>
     <div class="tab" data-tab="medicamentos">💊 Medicamentos</div>
     <div class="tab" data-tab="socorros">🚑 1ºs Socorros</div>
@@ -674,6 +676,47 @@ PAGE = r"""<!doctype html>
   document.querySelectorAll('.quick').forEach(b => b.addEventListener('click', () => {
     showTab('inventario'); $('inv-nome').value = b.dataset.add; $('inv-val').focus();
   }));
+
+  // Arrastar para reordenar as tabs (guardado por dispositivo)
+  function makeSortable(container, key, attr) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(key) || '[]');
+      saved.forEach(k => { const el = container.querySelector('[' + attr + '="' + k + '"]'); if (el) container.appendChild(el); });
+    } catch (e) {}
+    const save = () => localStorage.setItem(key,
+      JSON.stringify([...container.querySelectorAll('[' + attr + ']')].map(e => e.getAttribute(attr))));
+    container.querySelectorAll('[' + attr + ']').forEach(el => {
+      el.addEventListener('pointerdown', e => {
+        if (e.button) return;
+        const sx = e.clientX, sy = e.clientY; let moved = false;
+        const move = ev => {
+          if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 8) return;
+          if (!moved) { moved = true; el.classList.add('dragging'); try { el.setPointerCapture(ev.pointerId); } catch (_) {} }
+          ev.preventDefault();
+          let best = null, bd = Infinity;
+          container.querySelectorAll('[' + attr + ']:not(.dragging)').forEach(o => {
+            const r = o.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+            const d = Math.hypot(ev.clientX - cx, ev.clientY - cy);
+            if (d < bd) { bd = d; best = { o, cx }; }
+          });
+          if (best) container.insertBefore(el, ev.clientX < best.cx ? best.o : best.o.nextSibling);
+        };
+        const up = () => {
+          document.removeEventListener('pointermove', move);
+          document.removeEventListener('pointerup', up);
+          if (moved) {
+            el.classList.remove('dragging'); save();
+            const swallow = c => { c.stopPropagation(); c.preventDefault(); };
+            el.addEventListener('click', swallow, { capture: true, once: true });
+            setTimeout(() => el.removeEventListener('click', swallow, true), 50);
+          }
+        };
+        document.addEventListener('pointermove', move);
+        document.addEventListener('pointerup', up);
+      });
+    });
+  }
+  makeSortable($('tabs'), 'medkit_taborder', 'data-tab');
 </script>
 </body>
 </html>"""
