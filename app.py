@@ -379,6 +379,8 @@ PAGE = r"""<!doctype html>
       touch-action:none; user-select:none; -webkit-user-select:none; }
     .tab.on { background:var(--accent); color:#fff; border-color:var(--accent); }
     .tab.dragging { opacity:.55; cursor:grabbing; }
+    .grip { opacity:.4; margin-right:.2rem; font-size:.95em; letter-spacing:-2px; }
+    .tab.on .grip { opacity:.75; }
     .search { width:100%; padding:.7rem .9rem; font-size:1rem; border-radius:12px;
       border:1px solid var(--border); background:var(--card); color:var(--text);
       box-shadow:var(--shadow); margin:0 0 1rem; }
@@ -686,6 +688,7 @@ PAGE = r"""<!doctype html>
     const save = () => localStorage.setItem(key,
       JSON.stringify([...container.querySelectorAll('[' + attr + ']')].map(e => e.getAttribute(attr))));
     container.querySelectorAll('[' + attr + ']').forEach(el => {
+      el.insertAdjacentHTML('afterbegin', '<span class="grip" aria-hidden="true">⠿</span>');
       el.addEventListener('pointerdown', e => {
         if (e.button) return;
         const sx = e.clientX, sy = e.clientY; let moved = false;
