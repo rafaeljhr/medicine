@@ -26,6 +26,14 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).with_name("data")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 INV_FILE = DATA_DIR / "inventory.json"
 
+# Categorias do inventário (separadores). "geral" é a genérica por omissão.
+INV_CATS = [
+    {"key": "medicamentos", "label": "Medicamentos", "icone": "💊"},
+    {"key": "pensos", "label": "Pensos & Material", "icone": "🩹"},
+    {"key": "geral", "label": "Geral", "icone": "🧰"},
+]
+INV_CAT_KEYS = {c["key"] for c in INV_CATS}
+
 
 # --- Medicamentos (doses para ADULTOS saudáveis salvo indicação) -------------
 MEDS = {
@@ -302,9 +310,14 @@ def _socorros():
 def read_inv():
     try:
         data = json.loads(INV_FILE.read_text())
-        return data if isinstance(data, list) else []
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+    if not isinstance(data, list):
+        return []
+    for it in data:  # itens antigos não tinham categoria -> eram medicamentos
+        if "cat" not in it:
+            it["cat"] = "medicamentos"
+    return data
 
 
 def write_inv(items):
@@ -326,12 +339,16 @@ def api_inventory_add():
     if not nome:
         return jsonify({"ok": False, "erro": "Indique o nome do medicamento."}), 400
     validade = (d.get("validade") or "").strip()
+    cat = (d.get("cat") or "geral").strip()
+    if cat not in INV_CAT_KEYS:
+        cat = "geral"
     try:
         qty = max(1, int(d.get("qty") or 1))
     except (TypeError, ValueError):
         qty = 1
     items = read_inv()
-    items.append({"id": uuid.uuid4().hex[:10], "nome": nome, "validade": validade, "qty": qty})
+    items.append({"id": uuid.uuid4().hex[:10], "nome": nome, "cat": cat,
+                  "validade": validade, "qty": qty})
     write_inv(items)
     return jsonify(items)
 
@@ -395,6 +412,10 @@ PAGE = r"""<!doctype html>
     .tab.dragging { opacity:.55; cursor:grabbing; }
     .grip { opacity:.4; margin-right:.2rem; font-size:.95em; letter-spacing:-2px; }
     .tab.on .grip { opacity:.75; }
+    .itabs { display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:.6rem; }
+    .itab { font-size:.85rem; font-weight:700; padding:.4rem .7rem; border-radius:999px; cursor:pointer;
+      border:1px solid var(--border); background:var(--card); color:var(--muted); }
+    .itab.on { background:var(--accent); color:#fff; border-color:var(--accent); }
     .search { width:100%; padding:.7rem .9rem; font-size:1rem; border-radius:12px;
       border:1px solid var(--border); background:var(--card); color:var(--text);
       box-shadow:var(--shadow); margin:0 0 1rem; }
@@ -564,19 +585,24 @@ PAGE = r"""<!doctype html>
 
   <!-- INVENTARIO -->
   <section id="sec-inventario" class="hide">
+    <div class="itabs" id="invtabs">
+      {% for c in inv_cats %}
+      <div class="itab{% if loop.first %} on{% endif %}" data-inv="{{ c.key }}">{{ c.icone }} {{ c.label }}</div>
+      {% endfor %}
+    </div>
     <div class="card" style="margin-bottom:1rem">
       <div class="row">
-        <div class="field" style="flex:2 1 200px"><label>Medicamento</label>
-          <input id="inv-nome" list="medlist" placeholder="ex.: Ben-u-ron 1000 mg"></div>
-        <div class="field"><label>Validade</label>
+        <div class="field" style="flex:2 1 200px"><label>Item (em <b id="inv-catlabel">Medicamentos</b>)</label>
+          <input id="inv-nome" list="medlist" placeholder="ex.: Ben-u-ron 1000 mg, Pensos rápidos…"></div>
+        <div class="field"><label>Validade (opcional)</label>
           <input id="inv-val" type="date"></div>
         <div class="field" style="max-width:90px"><label>Qtd.</label>
           <input id="inv-qty" type="number" min="1" value="1"></div>
         <button class="btn" id="inv-add">＋ Adicionar</button>
       </div>
       <datalist id="medlist">{% for m in meds %}<option value="{{ m.nome }}">{% endfor %}</datalist>
-      <div class="sub" style="margin-top:.5rem">Adiciona o que tens em casa. Podes ter vários do mesmo
-        com validades diferentes — cada um é uma linha. Fica guardado no Pi.</div>
+      <div class="sub" style="margin-top:.5rem">Adiciona ao separador selecionado. A <b>validade é opcional</b>
+        (ex.: pensos não têm). Vários do mesmo com validades diferentes = várias linhas. Guardado no Pi.</div>
     </div>
     <div id="inv-list"></div>
   </section>
@@ -650,14 +676,25 @@ PAGE = r"""<!doctype html>
     const txt = p.length >= 3 ? `${p[2]}/${p[1]}/${p[0]}` : `${p[1]}/${p[0]}`;
     return (cls === 'exp' ? '⚠ expirado ' : (cls === 'soon' ? 'expira ' : 'val. ')) + txt;
   }
-  async function loadInv() {
-    let items = [];
-    try { items = await (await fetch('/api/inventory')).json(); } catch (e) {}
-    render(items);
+  let invCat = 'medicamentos', invItems = [];
+  const INV_LABELS = {};
+  document.querySelectorAll('#invtabs .itab').forEach(t => INV_LABELS[t.dataset.inv] = t.textContent.trim());
+  function setInvCat(key) {
+    invCat = key;
+    document.querySelectorAll('#invtabs .itab').forEach(t => t.classList.toggle('on', t.dataset.inv === key));
+    $('inv-catlabel').textContent = (INV_LABELS[key] || '').replace(/^\S+\s/, '');
+    renderInv();
   }
-  function render(items) {
+  document.querySelectorAll('#invtabs .itab').forEach(t => t.addEventListener('click', () => setInvCat(t.dataset.inv)));
+
+  async function loadInv() {
+    try { invItems = await (await fetch('/api/inventory')).json(); } catch (e) {}
+    renderInv();
+  }
+  function renderInv() {
     const box = $('inv-list');
-    if (!items.length) { box.innerHTML = '<div class="empty">Sem medicamentos no inventário. Adiciona o que tens em casa. 👆</div>'; return; }
+    const items = invItems.filter(it => (it.cat || 'geral') === invCat);
+    if (!items.length) { box.innerHTML = `<div class="empty">Nada em "${INV_LABELS[invCat] || invCat}". Adiciona acima. 👆</div>`; return; }
     const groups = {};
     items.forEach(it => (groups[it.nome] = groups[it.nome] || []).push(it));
     box.innerHTML = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'pt')).map(nome => {
@@ -674,23 +711,25 @@ PAGE = r"""<!doctype html>
   async function addItem() {
     const nome = $('inv-nome').value.trim();
     if (!nome) { $('inv-nome').focus(); return; }
-    const body = { nome, validade: $('inv-val').value, qty: $('inv-qty').value };
+    const body = { nome, cat: invCat, validade: $('inv-val').value, qty: $('inv-qty').value };
     const r = await fetch('/api/inventory/add', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (r.ok) { $('inv-nome').value = ''; $('inv-val').value = ''; $('inv-qty').value = '1';
-      render(await r.json()); $('inv-nome').focus(); }
+      invItems = await r.json(); renderInv(); $('inv-nome').focus(); }
   }
   async function delItem(id) {
     const r = await fetch('/api/inventory/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
-    if (r.ok) render(await r.json());
+    if (r.ok) { invItems = await r.json(); renderInv(); }
   }
   $('inv-add').addEventListener('click', addItem);
   $('inv-nome').addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
+  // auto-refresh do inventário enquanto o separador estiver aberto
+  setInterval(() => { if (!$('sec-inventario').classList.contains('hide')) loadInv(); }, 5000);
 
-  // Quick-add a partir da ficha do medicamento
+  // Quick-add a partir da ficha do medicamento (vai para Medicamentos)
   document.querySelectorAll('.quick').forEach(b => b.addEventListener('click', () => {
-    showTab('inventario'); $('inv-nome').value = b.dataset.add; $('inv-val').focus();
+    showTab('inventario'); setInvCat('medicamentos'); $('inv-nome').value = b.dataset.add; $('inv-val').focus();
   }));
 
   // Arrastar para reordenar as tabs (guardado por dispositivo)
@@ -741,7 +780,8 @@ PAGE = r"""<!doctype html>
 
 @app.route("/")
 def index():
-    return render_template_string(PAGE, sintomas=_sintomas(), meds=_meds_ref(), socorros=_socorros())
+    return render_template_string(PAGE, sintomas=_sintomas(), meds=_meds_ref(),
+                                  socorros=_socorros(), inv_cats=INV_CATS)
 
 
 @app.route("/healthz")
